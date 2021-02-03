@@ -1,0 +1,2 @@
+del *.sym
+del *.mod

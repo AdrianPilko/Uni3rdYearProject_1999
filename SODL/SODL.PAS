@@ -1,0 +1,789 @@
+PROGRAM Simple_Object_Description_Language;
+(*
+  By Adrian Pilkington
+  For 3rd year project
+  UMIST Dept. Of Computation
+
+  This program comprises an initial syntax analyser, with static type
+  checking on argument types, both in declarations and axioms. There is then
+  a call to the abs_syn.tpu that generates a skeletal implementation in the
+  Feynman Langauge.
+
+  The SODL compilation process is syntax-directed.
+*)
+
+  {$M $4000,0,3600 }   (* 16K stack, 3600 bytes heap *)
+
+USES lexical, semantic, dos, abs_syn;
+
+CONST
+   debug                     = false;
+   prog_file_name            = 'e:\3rdyea\sodl\sodl.exe';
+   path                      = 'e:\3rdyea\sodl\';
+   dos_spec_file_extension   = '.spc';
+   dos_symtab_file_extension = '.sym';
+
+VAR current_id_type,
+    previous_id_type    : id_type;
+    filename            : string;
+    carrier_type        : string;
+    inherited_type_name : string;
+
+PROCEDURE parse_success;
+BEGIN
+   writeln('   Spec. ''',full_file_name,''' is valid')
+END;
+
+PROCEDURE semantic_error(error_message : string);
+BEGIN
+   writeln;
+   writeln('Semantic error: ',error_message,' in ',full_file_name);
+   IF NOT(debug) THEN writeln(last_line_processed);
+   shut_doun_parser;
+   halt
+END;
+
+
+PROCEDURE syntax_error(error_message : string);
+BEGIN
+   writeln;
+   writeln('Syntax error: ',error_message,' in ',full_file_name);
+   IF NOT(debug) THEN writeln(last_line_processed);
+   shut_doun_parser;
+   halt
+END;
+
+PROCEDURE E(proc_name: string);
+BEGIN
+   IF debug THEN writeln('E : ',proc_name)
+END;
+
+PROCEDURE X(proc_name: string);
+BEGIN
+   IF debug THEN writeln('X : ',proc_name)
+END;
+
+FUNCTION first_inheritance_clause(current : lexeme_kind) : boolean;
+BEGIN
+   first_inheritance_clause := current = inherits_sym
+END;
+
+FUNCTION first_argument(current : lexeme_kind) : boolean;
+BEGIN
+   first_argument := ((current = id_sym) OR (current = const_sym)) AND
+                     ((current_id_type = attribute_func_id) OR
+                     (current_id_type = method_func_id) OR
+                     (current_id_type = var_id))
+END;
+
+FUNCTION first_func_app(current : lexeme_kind) : boolean;
+BEGIN
+   first_func_app := (current = id_sym) AND
+                     ((current_id_type = method_func_id) OR
+                     (current_id_type = decorated) OR
+                     (current_id_type = attribute_func_id))
+END;
+
+FUNCTION first_uses_clause(current : lexeme_kind) : boolean;
+BEGIN
+   first_uses_clause := current = uses_sym
+END;
+
+FUNCTION first_type_decl(current : lexeme_kind) : boolean;
+BEGIN
+   first_type_decl := current = type_sym
+END;
+
+FUNCTION first_attribute_functions(current : lexeme_kind) : boolean;
+BEGIN
+   first_attribute_functions := current = attribute_sym
+END;
+
+FUNCTION first_method_functions(current : lexeme_kind) : boolean;
+BEGIN
+   first_method_functions := current = method_sym
+END;
+
+FUNCTION first_attribute_func_def(current : lexeme_kind) : boolean;
+BEGIN
+   first_attribute_func_def := (current = id_sym)
+END;
+
+FUNCTION first_axioms(current : lexeme_kind) : boolean;
+BEGIN
+   first_axioms := current = axiom_sym
+END;
+
+FUNCTION first_method_func_def(current : lexeme_kind) : boolean;
+BEGIN
+   first_method_func_def := (current = id_sym) OR (current = sed_sym)
+END;
+
+FUNCTION first_axiom(current : lexeme_kind) : boolean;
+BEGIN
+   first_axiom := first_argument(current);
+END;
+
+FUNCTION first_method_function_app(current : lexeme_kind) : boolean;
+BEGIN
+   first_method_function_app := current = id_sym
+END;
+
+FUNCTION first_var_decl(current : lexeme_kind) : boolean;
+BEGIN
+   first_var_decl := current = var_sym
+END;
+
+FUNCTION first_spec_body(current : lexeme_kind) : boolean;
+BEGIN
+   first_spec_body := first_inheritance_clause(current) OR
+                      first_uses_clause(current) OR
+                      first_type_decl(current)
+END;
+
+FUNCTION first_spec(current : lexeme_kind) : boolean;
+BEGIN
+   first_spec := current = class_sym
+END;
+
+PROCEDURE accept_it(expected : lexeme_kind);
+VAR
+expect_spelling : string;
+BEGIN
+   read_sym;
+
+   IF current = expected THEN
+      { do nothing }
+   ELSE
+   BEGIN
+
+      CASE expected OF
+          class_sym    : expect_spelling := 'CLASS';
+          inherits_sym : expect_spelling := 'INHERITS';
+          uses_sym     : expect_spelling := 'USES';
+          type_sym     : expect_spelling := 'TYPE';
+          attribute_sym: expect_spelling := 'ATTRIBUTE';
+          function_sym : expect_spelling := 'FUNCTIONS';
+          method_sym   : expect_spelling :=  'METHOD';
+          for_sym      : expect_spelling := 'FOR';
+          initial_sym  : expect_spelling := 'INITIAL';
+          end_sym      : expect_spelling := 'END';
+          axiom_sym    : expect_spelling := 'AXIOMS';
+          var_sym      : expect_spelling := 'VAR';
+          parameter_sep_sym :expect_spelling := 'X';
+          full_stop_sym       : expect_spelling := '.';
+          comma_sym           : expect_spelling := ',';
+          equal_sym           : expect_spelling := '=';
+          function_result_sym : expect_spelling := '->';
+          semi_colon_sym      : expect_spelling := ';';
+          colon_sym           : expect_spelling := ':';
+          open_bracket_sym    : expect_spelling := '(';
+          close_bracket_sym   : expect_spelling := ')';
+          sed_sym             : expect_spelling := '~';
+          ELSE expect_spelling := 'Identifier or constant';
+      END;
+
+      writeln;
+      writeln('Syntax error: ''',expect_spelling,''' expected in ',full_file_name);
+      IF NOT(debug) THEN writeln(last_line_processed);
+      shut_doun_parser;
+      halt
+   END
+END;
+
+PROCEDURE rec_spec;
+   PROCEDURE rec_spec_body;
+      PROCEDURE rec_inheritance_clause;
+      VAR spec_file_name : string;
+          symtab_file_name : string;
+      BEGIN
+         E('rec_inheritance_clause');
+         inherited_type_name := '';
+         accept_it(id_sym);
+         spec_file_name := path + global_id_name + dos_spec_file_extension;
+         symtab_file_name := path + global_id_name +
+                                  dos_symtab_file_extension;
+         SwapVectors;
+         Exec(prog_file_name,spec_file_name);
+         SwapVectors;
+         IF DosError <> 0 THEN
+            WriteLn('error executing the parser #', DosError)
+         ELSE
+            BEGIN
+               input_symbol_table(symtab_file_name);
+               accept_it(for_sym);
+               accept_it(id_sym);
+               inherited_type_name := global_id_name;
+               abs_new_inherits(inherited_type_name);
+               accept_it(semi_colon_sym);
+               read_sym
+            END;
+        X('rec_inheritance_clause')
+      END;
+
+      PROCEDURE rec_uses_clause;
+      VAR spec_file_name : string;
+      VAR symtab_file_name : string;
+      BEGIN
+         E('rec_uses_clause');
+         accept_it(id_sym);
+         spec_file_name := path + global_id_name + dos_spec_file_extension;
+         symtab_file_name := path + global_id_name +
+                                  dos_symtab_file_extension;
+         SwapVectors;
+         Exec(prog_file_name,spec_file_name);
+         SwapVectors;
+         IF DosError <> 0 THEN
+            WriteLn('error executing the parser #', DosError)
+         ELSE
+         BEGIN
+            input_symbol_table(symtab_file_name);
+            accept_it(for_sym);
+            accept_it(id_sym);
+            accept_it(semi_colon_sym);
+            read_sym
+         END;
+         X('rec_uses_clause')
+      END;
+
+      PROCEDURE rec_type_decl;
+      BEGIN
+         E('rec_type_decl');
+         accept_it(id_sym);
+         insert_in_sym_table(global_id_name,type_id,false);
+         insert_in_sym_table('self', var_id, true); {set as local var }
+         carrier_type := global_id_name;
+         new_function_result_type( 'self', carrier_type);
+         IF inherited_type_name <> '' THEN
+            new_super_type(carrier_type, inherited_type_name);
+         abs_new_type(carrier_type);
+         accept_it(semi_colon_sym);
+         read_sym;
+         X('rec_type_decl')
+      END;
+
+      PROCEDURE rec_attribute_functions;
+
+         PROCEDURE rec_attribute_func_def;
+         VAR current_func_name : string;
+
+         BEGIN
+            E('rec_attribute_func_def');
+            insert_in_sym_table(global_id_name,attribute_func_id,false);
+            current_func_name := global_id_name;
+            read_sym;
+            IF current = open_bracket_sym THEN
+            BEGIN
+               read_sym;
+               IF current = id_sym THEN
+               BEGIN
+                  retrieve_from_sym_table(global_id_name,current_id_type);
+                  IF current_id_type = type_id THEN
+                     new_function_argument_type(current_func_name, global_id_name)
+                  ELSE semantic_error('argument type expected');
+                  read_sym;
+                  IF current = close_bracket_sym THEN
+                  BEGIN
+                     read_sym;
+                     IF current = function_result_sym THEN
+                     BEGIN
+                        read_sym;
+                        IF current = id_sym THEN
+                        BEGIN
+                           retrieve_from_sym_table(global_id_name,current_id_type);
+                           IF current_id_type = type_id THEN
+                              new_function_result_type(current_func_name,
+                                                      global_id_name)
+                           ELSE semantic_error('argument type expected');
+                           read_sym;
+                           abs_new_att_func(current_func_name);
+                           IF current = semi_colon_sym THEN
+                           ELSE syntax_error(''';'' expected');
+                        END
+                           ELSE syntax_error('Identifier expected')
+                     END
+                     ELSE
+                        syntax_error('''->'' expected')
+                  END
+                  ELSE syntax_error(''')'' bracket symbol expected');
+               END
+               ELSE syntax_error('Identifier expected')
+            END
+            ELSE syntax_error('''('' bracket symbol expected');
+            X('rec_attribute_func_def')
+         END;
+
+      BEGIN
+         E('rec_attribute_functions');
+         read_sym;
+         IF current = function_sym THEN
+         BEGIN
+            read_sym;
+            WHILE first_attribute_func_def(current) DO
+            BEGIN
+               rec_attribute_func_def;
+               read_sym
+            END
+         END
+         ELSE syntax_error('FUNCTION keyword expected');
+         X('rec_attribute_functions')
+      END;
+
+      PROCEDURE rec_method_functions;
+      VAR current_func_name : string;
+
+         PROCEDURE rec_standard_function_signiture;
+         BEGIN
+            E('rec_standard_function_signiture');
+            IF current = open_bracket_sym THEN
+            BEGIN
+               read_sym;
+               IF current = id_sym THEN
+               BEGIN
+                  retrieve_from_sym_table(global_id_name,current_id_type);
+                  IF current_id_type = type_id THEN
+                     new_function_argument_type(current_func_name, global_id_name)
+                  ELSE semantic_error('argument type expected');
+                  read_sym;
+                  WHILE current = parameter_sep_sym DO
+                  BEGIN
+                     read_sym;
+                     IF current = id_sym THEN
+                     BEGIN
+                        retrieve_from_sym_table(global_id_name,current_id_type);
+                        IF current_id_type = type_id THEN
+                           new_function_argument_type(current_func_name,
+                                                       global_id_name)
+                        ELSE semantic_error('argument type expected');
+                     END
+                     ELSE syntax_error('Identifier expected');
+                     read_sym
+                  END;
+                  IF current = close_bracket_sym THEN
+                  BEGIN
+                     read_sym;
+                     IF current = function_result_sym THEN
+                     BEGIN
+                        read_sym;
+                        IF current = id_sym THEN
+                        BEGIN
+                           retrieve_from_sym_table(global_id_name,
+                                                   current_id_type);
+                           IF current_id_type = type_id THEN
+                           new_function_result_type(current_func_name,
+                                                      global_id_name)
+                           ELSE semantic_error('argument type expected');
+                           read_sym;
+                           IF current = semi_colon_sym THEN
+                           ELSE syntax_error(''';'' expected');
+                        END
+                        ELSE syntax_error('Identifier expected')
+                     END
+                     ELSE
+                        syntax_error('''->'' expected')
+                  END
+                  ELSE syntax_error(''')'' bracket symbol expected');
+               END
+               ELSE syntax_error('Identifier expected')
+            END
+            ELSE syntax_error('''('' bracket symbol expected');
+            X('rec_standard_function_signiture');
+         END;
+
+
+         PROCEDURE rec_decorated_function_signiture;
+         BEGIN
+            E('rec_decorated_function_signiture');
+            IF current = open_bracket_sym THEN
+            BEGIN
+               read_sym;
+               IF current = id_sym THEN
+               BEGIN
+                  retrieve_from_sym_table(global_id_name,current_id_type);
+                  IF current_id_type = type_id THEN
+                     new_function_argument_type(current_func_name, global_id_name)
+                  ELSE semantic_error('argument type expected');
+                  read_sym;
+                  IF current = parameter_sep_sym THEN
+                  BEGIN
+                     read_sym;
+                     IF current = id_sym THEN
+                     BEGIN
+                        retrieve_from_sym_table(global_id_name,current_id_type);
+                        IF current_id_type = type_id THEN
+                           new_function_argument_type(current_func_name,
+                                                       global_id_name)
+                        ELSE semantic_error('argument type expected');
+                     END
+                     ELSE syntax_error('Identifier expected');
+                     read_sym
+                  END;
+                  IF current = close_bracket_sym THEN
+                  BEGIN
+                     read_sym;
+                     IF current = function_result_sym THEN
+                     BEGIN
+                        read_sym;
+                        IF current = id_sym THEN
+                        BEGIN
+                           retrieve_from_sym_table(global_id_name,
+                                                   current_id_type);
+                           IF current_id_type = type_id THEN
+                           new_function_result_type(current_func_name,
+                                                      global_id_name)
+                           ELSE semantic_error('argument type expected');
+                           read_sym;
+                           IF current = semi_colon_sym THEN
+                           ELSE syntax_error(''';'' expected');
+                        END
+                        ELSE syntax_error('Identifier expected')
+                     END
+                     ELSE
+                        syntax_error('''->'' expected')
+                  END
+                  ELSE syntax_error(''')'' bracket symbol expected');
+               END
+               ELSE syntax_error('Identifier expected')
+            END
+            ELSE syntax_error('''('' bracket symbol expected');
+            X('rec_decorated_function_signiture');
+         END;
+
+
+         PROCEDURE rec_method_func_def;
+
+         BEGIN
+            E('rec_method_func_def');
+            IF current = id_sym THEN { standard function definition }
+            BEGIN
+               insert_in_sym_table(global_id_name,method_func_id,false);
+               current_func_name := global_id_name;
+               read_sym;
+               rec_standard_function_signiture
+            END
+            ELSE  {decorated function definition}
+            IF current = sed_sym THEN
+            BEGIN
+               read_sym; { operator }
+               insert_in_sym_table(global_id_name,decorated,false);
+               current_func_name := global_id_name;
+               read_sym; { sed_sym }
+               IF current = sed_sym THEN
+               ELSE syntax_error('infix function decoration expected');
+               read_sym;
+               rec_decorated_function_signiture
+            END;
+            abs_new_met_func(current_func_name);
+            X('rec_method_func_def')
+         END;
+
+      BEGIN
+         E('rec_method_functions');
+         read_sym;
+         IF current = function_sym THEN
+         BEGIN
+            read_sym;
+            WHILE first_method_func_def(current) DO
+            BEGIN
+               rec_method_func_def;
+               read_sym
+            END
+         END
+         ELSE syntax_error('FUNCTION keyword expected');
+         X('rec_method_functions')
+      END;
+
+      PROCEDURE rec_axioms;
+
+         PROCEDURE rec_var_decl;
+
+         VAR current_var_name : string;
+
+         BEGIN
+            E('rec_var_decl');
+            read_sym;
+            retrieve_from_sym_table(global_id_name,current_id_type);
+            WHILE (current = id_sym) AND (current_id_type = void) DO
+            BEGIN
+               insert_in_sym_table(global_id_name,var_id,true);
+               current_var_name := global_id_name;
+               read_sym;
+               IF current = colon_sym THEN
+               BEGIN
+                  read_sym;
+                  IF current = id_sym THEN
+                  BEGIN
+                     retrieve_from_sym_table(global_id_name,
+                                             current_id_type);
+                     IF current_id_type = type_id THEN
+                        new_function_result_type(current_var_name,
+                                                 global_id_name)
+                     ELSE semantic_error('type identifier expected');
+                     read_sym;
+                     IF current = semi_colon_sym THEN read_sym
+                     ELSE syntax_error(''';'' expected');
+                     retrieve_from_sym_table(global_id_name,current_id_type)
+                  END
+                  ELSE syntax_error('Identifier expected')
+               END
+               ELSE syntax_error(''':'' expected');
+            END;
+            X('rec_var_decl')
+         END;
+
+         PROCEDURE rec_axiom;
+
+         VAR argument_type_LHS,
+             argument_type_RHS  : string;
+
+            PROCEDURE rec_argument(VAR this_argument_type: string); FORWARD;
+
+            PROCEDURE rec_method_function_app(VAR result_type : string;
+                                              VAR last_arg_type: string);
+
+            VAR arg_num       : integer;
+                argument_type : string;
+                current_func_name : string;
+
+            BEGIN
+               E('rec_method_function_app');
+               arg_num := 1;
+               retrieve_from_sym_table(global_id_name,current_id_type);
+               previous_id_type := current_id_type;
+               current_func_name := global_id_name;
+               result_type := result_of_current(current_func_name);
+               last_arg_type := result_type;
+               read_sym;
+               retrieve_from_sym_table(global_id_name,current_id_type);
+               IF current = open_bracket_sym THEN
+               BEGIN
+                  read_sym;
+                  rec_argument(argument_type);
+                  IF is_type_conformant(argument_type, argument_of_current(current_func_name,
+                                                            arg_num)) THEN
+                  ELSE
+                     semantic_error('argument types do not match previous definition');
+                  arg_num := arg_num + 1;
+                  WHILE current = comma_sym DO
+                  BEGIN
+                     read_sym;
+                     rec_argument(argument_type);
+                     IF is_type_conformant(argument_type, argument_of_current(current_func_name,
+                                                              arg_num)) THEN
+                     ELSE
+                        semantic_error('argument types do not match previous definition');
+                     arg_num := arg_num + 1;
+                     IF (current <> semi_colon_sym) AND
+                        (current <> equal_sym) AND
+                        (current <> comma_sym) THEN read_sym
+                  END;
+                  IF current = close_bracket_sym THEN read_sym;
+                  retrieve_from_sym_table(global_id_name,current_id_type);
+               END
+               ELSE
+               IF ((current = id_sym) OR (current = const_sym))
+                  AND (previous_id_type = decorated) THEN
+               BEGIN
+                  arg_num := 1;
+                  IF is_type_conformant(last_arg_type, argument_of_current(current_func_name,
+                                                            arg_num)) THEN
+                  ELSE
+                     semantic_error('argument types do not match previous definition');
+                  rec_argument(argument_type);
+                  arg_num := 2;
+                  IF is_type_conformant(last_arg_type, argument_of_current(current_func_name,
+                                                            arg_num)) THEN
+                  ELSE
+                     semantic_error('argument types do not match previous definition');
+               END
+               ELSE
+                  syntax_error('attribute/method function or identifier expected');
+               IF (current = id_sym) AND (current_id_type = decorated) THEN
+               BEGIN
+                  current_func_name := global_id_name;
+                  arg_num := 1;
+                  IF is_type_conformant(last_arg_type, argument_of_current(current_func_name,
+                                                            arg_num)) THEN
+                  ELSE
+                     semantic_error('argument types do not match previous definition');
+                  result_type := result_of_current(current_func_name);
+                  arg_num := 2;
+                  read_sym;
+                  rec_argument(argument_type);
+                  IF is_type_conformant(argument_type, argument_of_current(current_func_name,
+                                                            arg_num)) THEN
+                  ELSE
+                     semantic_error('argument types do not match previous definition');
+                  IF current = close_bracket_sym THEN read_sym
+               END;
+               X('rec_method_function_app')
+            END;
+
+            PROCEDURE rec_argument(VAR this_argument_type : string);
+            BEGIN
+               E('rec_argument');
+               retrieve_from_sym_table(global_id_name,current_id_type);
+               IF current = const_sym THEN
+               BEGIN
+                  this_argument_type := 'number';
+                  read_sym;
+                  retrieve_from_sym_table(global_id_name,current_id_type);
+                  IF first_func_app(current) THEN
+                     rec_method_function_app(this_argument_type,
+                                                  this_argument_type)
+               END
+               ELSE
+               IF first_func_app(current) THEN
+                  rec_method_function_app(this_argument_type,
+                                            this_argument_type)
+               ELSE
+               IF current = id_sym THEN
+               BEGIN
+                  retrieve_from_sym_table(global_id_name,current_id_type);
+                  IF current_id_type = void THEN
+                     semantic_error('variable not delclared before use')
+                  ELSE
+                  BEGIN
+                     this_argument_type:= result_of_current(global_id_name);
+                     read_sym;
+                     retrieve_from_sym_table(global_id_name,current_id_type);
+                     IF first_func_app(current) THEN
+                        rec_method_function_app(this_argument_type,
+                                                  this_argument_type)
+
+                  END
+               END
+               ELSE
+                  syntax_error('argument expected');
+               X('rec_argument')
+            END;
+
+         BEGIN
+            E('rec_axiom');
+            { <argument> = <argument> }
+            retrieve_from_sym_table(global_id_name,current_id_type);
+            IF first_argument(current) THEN
+            BEGIN
+               rec_argument(argument_type_LHS);
+               IF current <> equal_sym THEN read_sym;
+               IF current = equal_sym THEN
+               BEGIN
+                  read_sym;
+                  retrieve_from_sym_table(global_id_name,current_id_type);
+                  IF first_argument(current) THEN
+                  BEGIN
+                     rec_argument(argument_type_RHS);
+                     IF is_type_conformant(argument_type_LHS, argument_type_RHS)
+                     THEN
+                     ELSE
+                        semantic_error('argument types do not match (LHS <> RHS)')
+                  END
+                  ELSE
+                     syntax_error('argument expected')
+               END
+               ELSE syntax_error('''='' expected')
+            END
+            ELSE syntax_error('argument expected');
+            X('rec_axiom')
+         END;
+
+      BEGIN
+         E('rec_axioms');
+         read_sym;
+         IF first_var_decl(current) THEN rec_var_decl;
+         IF current = initial_sym THEN
+         BEGIN
+            read_sym;
+            rec_axiom;
+            IF current = end_sym THEN
+            BEGIN
+               read_sym;
+               IF current = semi_colon_sym THEN
+               BEGIN
+                  read_sym;
+                  read_sym
+               END
+               ELSE syntax_error(''';'' expected')
+            END
+            ELSE syntax_error('End expected')
+         END;
+         retrieve_from_sym_table(global_id_name,current_id_type);
+         WHILE first_axiom(current) DO
+         BEGIN
+            rec_axiom;
+            read_sym;
+            IF (current = semi_colon_sym) AND (current <> id_sym) THEN
+               read_sym;
+         END;
+         X('rec_axioms')
+      END;
+
+   BEGIN
+      E('rec_spec_body');
+      IF first_inheritance_clause(current) THEN rec_inheritance_clause;
+      WHILE first_uses_clause(current) DO rec_uses_clause;
+      IF first_type_decl(current) THEN rec_type_decl
+      ELSE syntax_error('Carrier type declation expected');
+      IF first_attribute_functions(current) THEN rec_attribute_functions
+      ELSE syntax_error('Attribute functions expected');
+      IF first_method_functions(current) THEN
+      BEGIN
+         rec_method_functions;
+         output_sym_table(filename)
+      END
+      ELSE
+         syntax_error('Method functions expected');
+      IF first_axioms(current) THEN rec_axioms
+      ELSE syntax_error('Axioms expected');
+      X('rec_spec_body')
+   END;
+
+BEGIN
+   E('rec_spec');
+   read_sym;
+   IF current = id_sym THEN
+   BEGIN
+      abs_new_spec(global_id_name);
+      filename := path + global_id_name + '.sym'; {for symbol table output}
+      read_sym;
+      IF current = semi_colon_sym THEN
+      BEGIN
+         read_sym;
+         IF first_spec_body(current) THEN rec_spec_body
+         ELSE syntax_error('Specification body expected')
+      END
+      ELSE syntax_error(''';'' expected');
+      IF current = end_sym THEN
+      BEGIN
+         read_sym;
+         IF current = full_stop_sym THEN
+         ELSE syntax_error('Full stop expected')
+      END
+      ELSE syntax_error('END expected')
+   END
+   ELSE syntax_error('identifier expected');
+   X('rec_spec')
+END;
+
+PROCEDURE setup_predefined_types;
+BEGIN
+   insert_in_sym_table('boolean', type_id, true);
+   insert_in_sym_table('true', var_id, true);
+   new_function_result_type( 'true', 'boolean' );
+   insert_in_sym_table('false', var_id, true);
+   new_function_result_type( 'false', 'boolean' );
+   insert_in_sym_table('nil', type_id, true);
+   insert_in_sym_table('string', type_id, true);
+   insert_in_sym_table('number', type_id, true)
+END;
+
+BEGIN
+   writeln('Parsing ''',full_file_name,'''');
+   setup_predefined_types;
+   read_sym;
+   IF first_spec(current) THEN rec_spec
+   ELSE syntax_error('CLASS keyword expected');
+   parse_success;
+   create_model_language_implementation(path);
+   shut_doun_parser
+END.
